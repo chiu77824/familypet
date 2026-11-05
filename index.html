@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>全寵家組合商品明細對照檔管理系統</title>
+    <!-- 引入 SheetJS 處理 Excel 匯入與匯出 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #f4f6f9; color: #333; padding: 20px; }
+        .container { max-width: 950px; margin: 0 auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        h2 { margin-bottom: 20px; color: #1e293b; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+        .form-card { background: #f8fafc; border: 1px solid #e2e8f0; padding: 18px; border-radius: 6px; margin-bottom: 20px; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group label { font-size: 14px; font-weight: 600; color: #475569; }
+        input[type="text"], input[type="number"] { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 14px; outline: none; }
+        input:focus { border-color: #2563eb; }
+        .btn { padding: 8px 14px; border: none; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; display: inline-flex; align-items: center; gap: 4px; }
+        .btn-primary { background: #2563eb; color: #fff; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-success { background: #059669; color: #fff; }
+        .btn-success:hover { background: #047857; }
+        .btn-import { background: #0284c7; color: #fff; }
+        .btn-import:hover { background: #0369a1; }
+        .btn-danger { background: #ef4444; color: #fff; padding: 4px 8px; font-size: 12px; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-edit { background: #f59e0b; color: #fff; padding: 4px 8px; font-size: 12px; margin-right: 4px; }
+        .btn-edit:hover { background: #d97706; }
+        .btn-cancel { background: #64748b; color: #fff; }
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        .search-box { width: 220px; }
+        .action-btns { display: flex; gap: 8px; align-items: center; }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th, td { padding: 12px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+        th { background: #f1f5f9; color: #334155; font-weight: 600; }
+        tr:hover { background: #f8fafc; }
+        .empty-msg { text-align: center; color: #94a3b8; padding: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>全寵家組合商品明細對照檔管理</h2>
+
+    <!-- 新增 / 修改 表單 -->
+    <div class="form-card">
+        <div class="form-grid">
+            <div class="form-group">
+                <label for="bundleCode">組合代號</label>
+                <input type="text" id="bundleCode" placeholder="例：SET-2026A">
+            </div>
+            <div class="form-group">
+                <label for="itemCode">單品代號</label>
+                <input type="text" id="itemCode" placeholder="例：ITEM-001">
+            </div>
+            <div class="form-group">
+                <label for="itemQty">數量</label>
+                <input type="number" id="itemQty" min="1" value="1">
+            </div>
+            <div style="display:flex; gap:6px;">
+                <button class="btn btn-primary" id="saveBtn" onclick="saveRecord()">新增對照</button>
+                <button class="btn btn-cancel" id="cancelBtn" onclick="resetForm()" style="display:none;">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 工具列：搜尋、批次匯入/匯出 -->
+    <div class="toolbar">
+        <input type="text" class="search-box" id="searchInput" oninput="renderTable()" placeholder="搜尋組合或單品代號...">
+        
+        <div class="action-btns">
+            <!-- 檔案選擇器 (支援 .xlsx, .xls, .csv) -->
+            <input type="file" id="excelFileInput" accept=".xlsx, .xls, .csv" style="display: none;" onchange="importExcel(event)">
+            
+            <button class="btn btn-import" onclick="document.getElementById('excelFileInput').click()">
+                📂 批次匯入 (Excel/CSV)
+            </button>
+            <button class="btn btn-success" onclick="exportExcel()">
+                💾 匯出 Excel (.xlsx)
+            </button>
+        </div>
+    </div>
+
+    <!-- 資料表格 (依組合代號升冪排序) -->
+    <table>
+        <thead>
+            <tr>
+                <th>組合代號 ▲</th>
+                <th>單品代號</th>
+                <th>數量</th>
+                <th style="width: 120px;">操作</th>
+            </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+    </table>
+</div>
+
+<script>
+    /**
+     * 【IT 串接組態】 API 端點設定
+     * 若未串接後端 (USE_LOCAL_STORAGE = true)，預設使用瀏覽器 LocalStorage 儲存測試
+     */
+    const CONFIG = {
+        USE_LOCAL_STORAGE: true, // IT 接手後請改為 false 並填寫 API_BASE_URL
+        API_BASE_URL: "/api/bundle-mappings" 
+    };
+
+    let mappingData = [];
+    let editId = null;
+
+    // 頁面載入後自動取得資料
+    window.onload = function() {
+        fetchData();
+    };
+
+    // 1. 取得對照資料 (GET)
+    async function fetchData() {
+        if (CONFIG.USE_LOCAL_STORAGE) {
+            mappingData = JSON.parse(localStorage.getItem('bundleData')) || [
+                { id: 1, bundleCode: "SET-A01", itemCode: "ITEM-101", qty: 2 },
+                { id: 2, bundleCode: "SET-A01", itemCode: "ITEM-102", qty: 1 },
+                { id: 3, bundleCode: "SET-B02", itemCode: "ITEM-201", qty: 1 }
+            ];
+            renderTable();
+        } else {
+            try {
+                const response = await fetch(CONFIG.API_BASE_URL);
+                if (!response.ok) throw new Error("讀取資料失敗");
+                mappingData = await response.json();
+                renderTable();
+            } catch (err) {
+                alert("無法連線至後端資料庫：" + err.message);
+            }
+        }
+    }
+
+    // 檢查「組合代號 + 單品代號」是否重複
+    function isDuplicate(bundleCode, itemCode, excludeId = null) {
+        return mappingData.some(item => 
+            item.id !== excludeId &&
+            item.bundleCode.toLowerCase() === bundleCode.toLowerCase() &&
+            item.itemCode.toLowerCase() === itemCode.toLowerCase()
+        );
+    }
+
+    // 2. 排序邏輯 (依組合代號小到大排序)
+    function sortData(data) {
+        return data.sort((a, b) => {
+            const comp = a.bundleCode.localeCompare(b.bundleCode, undefined, { numeric: true, sensitivity: 'base' });
+            if (comp !== 0) return comp;
+            return a.itemCode.localeCompare(b.itemCode, undefined, { numeric: true, sensitivity: 'base' });
+        });
+    }
+
+    // 3. 渲染 HTML 表格
+    function renderTable() {
+        const tbody = document.getElementById('tableBody');
+        const filter = document.getElementById('searchInput').value.toLowerCase();
+        tbody.innerHTML = '';
+
+        const filteredData = mappingData.filter(item => 
+            item.bundleCode.toLowerCase().includes(filter) || 
+            item.itemCode.toLowerCase().includes(filter)
+        );
+
+        sortData(filteredData);
+
+        if (filteredData.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">尚無對照資料</td></tr>';
+            return;
+        }
+
+        filteredData.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><strong>${item.bundleCode}</strong></td>
+                <td>${item.itemCode}</td>
+                <td>${item.qty}</td>
+                <td>
+                    <button class="btn btn-edit" onclick="editRecord(${item.id})">修改</button>
+                    <button class="btn btn-danger" onclick="deleteRecord(${item.id})">刪除</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 4. 新增/修改資料 (含重複檢查)
+    async function saveRecord() {
+        const bundleCode = document.getElementById('bundleCode').value.trim();
+        const itemCode = document.getElementById('itemCode').value.trim();
+        const qty = parseInt(document.getElementById('itemQty').value, 10);
+
+        if (!bundleCode || !itemCode || isNaN(qty) || qty <= 0) {
+            alert('請完整填寫欄位，且數量必須大於 0');
+            return;
+        }
+
+        // 自動檢查重複資料
+        if (isDuplicate(bundleCode, itemCode, editId)) {
+            alert(`⚠️ 警告：已存在相同的對照資料！\n\n組合代號: ${bundleCode}\n單品代號: ${itemCode}`);
+            return;
+        }
+
+        const payload = { bundleCode, itemCode, qty };
+
+        if (CONFIG.USE_LOCAL_STORAGE) {
+            if (editId !== null) {
+                const index = mappingData.findIndex(item => item.id === editId);
+                if (index !== -1) mappingData[index] = { id: editId, ...payload };
+            } else {
+                const newId = mappingData.length > 0 ? Math.max(...mappingData.map(i => i.id)) + 1 : 1;
+                mappingData.push({ id: newId, ...payload });
+            }
+            localStorage.setItem('bundleData', JSON.stringify(mappingData));
+            resetForm();
+            renderTable();
+        } else {
+            try {
+                const url = editId ? `${CONFIG.API_BASE_URL}/${editId}` : CONFIG.API_BASE_URL;
+                const method = editId ? 'PUT' : 'POST';
+                
+                const response = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) throw new Error("儲存失敗");
+                
+                resetForm();
+                await fetchData();
+            } catch (err) {
+                alert("後端儲存錯誤：" + err.message);
+            }
+        }
+    }
+
+    // 5. 批次匯入 Excel (.xlsx / .csv) (自動跳過重複項)
+    async function importExcel(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                let newItems = [];
+                let duplicateCount = 0;
+                let currentMaxId = mappingData.length > 0 ? Math.max(...mappingData.map(i => i.id)) : 0;
+
+                jsonRows.forEach((row, index) => {
+                    if (!row || row.length === 0) return;
+                    const val0 = String(row[0] || '').trim();
+                    const val1 = String(row[1] || '').trim();
+                    const val2 = parseInt(row[2], 10);
+
+                    // 跳過表頭欄位
+                    if (index === 0 && (val0.includes('組合') || val0.toLowerCase().includes('bundle'))) return;
+
+                    if (val0 && val1 && !isNaN(val2) && val2 > 0) {
+                        // 檢查系統現有資料與本次批次準備新增的資料是否有重複
+                        const existsInCurrent = isDuplicate(val0, val1);
+                        const existsInBatch = newItems.some(i => 
+                            i.bundleCode.toLowerCase() === val0.toLowerCase() && 
+                            i.itemCode.toLowerCase() === val1.toLowerCase()
+                        );
+
+                        if (existsInCurrent || existsInBatch) {
+                            duplicateCount++;
+                        } else {
+                            currentMaxId++;
+                            newItems.push({ id: currentMaxId, bundleCode: val0, itemCode: val1, qty: val2 });
+                        }
+                    }
+                });
+
+                if (newItems.length === 0) {
+                    alert(`匯入取消：檔案中的資料已全部存在，共有 ${duplicateCount} 筆重複資料。`);
+                    return;
+                }
+
+                if (CONFIG.USE_LOCAL_STORAGE) {
+                    mappingData.push(...newItems);
+                    sortData(mappingData);
+                    localStorage.setItem('bundleData', JSON.stringify(mappingData));
+                    renderTable();
+                    alert(`成功匯入 ${newItems.length} 筆對照資料！` + (duplicateCount > 0 ? `\n(已自動跳過 ${duplicateCount} 筆重複資料)` : ''));
+                } else {
+                    const response = await fetch(`${CONFIG.API_BASE_URL}/batch`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newItems.map(({bundleCode, itemCode, qty}) => ({bundleCode, itemCode, qty})))
+                    });
+
+                    if (!response.ok) throw new Error("批次匯入失敗");
+                    alert(`成功批次寫入 ${newItems.length} 筆資料至資料庫！` + (duplicateCount > 0 ? `\n(已自動跳過 ${duplicateCount} 筆重複資料)` : ''));
+                    await fetchData();
+                }
+            } catch (err) {
+                alert('解析或匯入失敗：' + err.message);
+            } finally {
+                event.target.value = '';
+            }
+        };
+
+        reader.readAsArrayBuffer(file);
+    }
+
+    // 6. 刪除資料 (DELETE)
+    async function deleteRecord(id) {
+        if (!confirm('確定要刪除這筆對照資料嗎？')) return;
+
+        if (CONFIG.USE_LOCAL_STORAGE) {
+            mappingData = mappingData.filter(i => i.id !== id);
+            localStorage.setItem('bundleData', JSON.stringify(mappingData));
+            renderTable();
+        } else {
+            try {
+                const response = await fetch(`${CONFIG.API_BASE_URL}/${id}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error("刪除失敗");
+                await fetchData();
+            } catch (err) {
+                alert("刪除錯誤：" + err.message);
+            }
+        }
+    }
+
+    // 7. 匯出 Excel
+    function exportExcel() {
+        sortData(mappingData);
+        if (mappingData.length === 0) {
+            alert('目前無資料可匯出！');
+            return;
+        }
+
+        const excelData = [["組合代號", "單品代號", "數量"]];
+        mappingData.forEach(row => excelData.push([row.bundleCode, row.itemCode, row.qty]));
+
+        const worksheet = XLSX.utils.aoa_to_sheet(excelData);
+        worksheet['!cols'] = [{ wch: 18 }, { wch: 18 }, { wch: 10 }];
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "組合明細對照表");
+
+        const filename = `全寵家組合商品揀貨對照表_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+        XLSX.writeFile(workbook, filename);
+    }
+
+    function editRecord(id) {
+        const item = mappingData.find(i => i.id === id);
+        if (!item) return;
+
+        document.getElementById('bundleCode').value = item.bundleCode;
+        document.getElementById('itemCode').value = item.itemCode;
+        document.getElementById('itemQty').value = item.qty;
+
+        editId = id;
+        document.getElementById('saveBtn').innerText = '更新對照';
+        document.getElementById('cancelBtn').style.display = 'inline-block';
+    }
+
+    function resetForm() {
+        document.getElementById('bundleCode').value = '';
+        document.getElementById('itemCode').value = '';
+        document.getElementById('itemQty').value = 1;
+        editId = null;
+        document.getElementById('saveBtn').innerText = '新增對照';
+        document.getElementById('cancelBtn').style.display = 'none';
+    }
+</script>
+
+</body>
+</html>
